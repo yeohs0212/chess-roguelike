@@ -141,6 +141,31 @@ h1{font-family:'Cinzel',serif;font-size:22px;font-weight:600;color:var(--gold);l
 .overlay-box h2{font-family:'Cinzel',serif;font-size:17px;color:var(--gold);margin-bottom:8px;}
 .overlay-box p{font-size:13px;color:var(--text-dim);margin-bottom:16px;line-height:1.6;}
 .help-text{font-size:11px;color:var(--text-dim);line-height:1.95;}
+
+/* ── 반응형 (태블릿/모바일) ── */
+@media(max-width:860px){
+  .game-wrap{grid-template-columns:1fr;gap:10px;}
+  .board{width:min(88vw,400px);height:min(88vw,400px);}
+  .cell{width:calc(min(88vw,400px)/8);height:calc(min(88vw,400px)/8);font-size:calc(min(88vw,400px)/8*0.6);}
+  .board-col{width:100%;}
+  /* 보드 위에 적 정보, 아래에 내 상태 배치 */
+  .game-wrap>div:first-child{order:3;}
+  .game-wrap>div:nth-child(2){order:1;}
+  .game-wrap>div:nth-child(3){order:2;}
+  .card{width:calc(min(88vw,400px)/7 - 6px);padding:8px 2px 6px;}
+  .card-sym{font-size:calc(min(88vw,400px)/7*0.42);}
+  .card-name{font-size:9px;}
+  .hand{gap:5px;}
+}
+@media(max-width:480px){
+  body{padding:8px 6px 30px;}
+  h1{font-size:17px;}
+  .subtitle{font-size:11px;margin-bottom:8px;}
+  .board{width:min(96vw,360px);height:min(96vw,360px);}
+  .cell{width:calc(min(96vw,360px)/8);height:calc(min(96vw,360px)/8);font-size:calc(min(96vw,360px)/8*0.58);}
+  .card{width:calc(min(96vw,360px)/6 - 7px);}
+  .modal-box{min-width:90vw;max-width:96vw;padding:14px 14px;}
+}
 </style>
 </head>
 <body>
@@ -423,16 +448,21 @@ function getMoves(i,b){
   const abi=p.ability?ABILITIES[p.ability]:null;
 
   if(p.type==='pawn'){
-    const d=p.side==='my'?-1:1;
+    const d=p.side==='my'?-1:1;  // my: 위(-1), enm: 아래(+1)
     const startRow=p.side==='my'?6:1;
-    const nr=r+d;
+    const nr=r+d;  // 전진 방향 한 칸
+
+    // 전진 이동 (대각 불가, 직선만)
     if(inB(nr,c)&&!b[idx(nr,c)]){
       mv.add(idx(nr,c));
-      // 돌격폰: 항상 2칸 / 기본폰: 시작줄에서만 2칸
       const canTwo=abi?.noStartRestrict||r===startRow;
       if(canTwo&&inB(r+2*d,c)&&!b[idx(r+2*d,c)])mv.add(idx(r+2*d,c));
     }
-    [-1,1].forEach(dc=>{if(inB(nr,c+dc)&&b[idx(nr,c+dc)]?.side===en)mv.add(idx(nr,c+dc));});
+    // 대각 포획: 반드시 전진 방향(d) 대각만 허용
+    [-1,1].forEach(dc=>{
+      const cr=r+d, cc=c+dc;  // capture row = 전진 1칸 row만
+      if(inB(cr,cc)&&b[idx(cr,cc)]?.side===en)mv.add(idx(cr,cc));
+    });
   }else if(p.type==='knight'){
     [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]].forEach(([dr,dc])=>push(r+dr,c+dc));
   }else if(p.type==='bishop'){
@@ -498,12 +528,9 @@ function minimax(b,depth,alpha,beta,max){
   else{let best=Infinity;for(const mv of moves){best=Math.min(best,minimax(applyMv(b,mv),depth-1,alpha,beta,true));beta=Math.min(beta,best);if(beta<=alpha)break;}return best;}
 }
 function bestMove(b){
-  const depth = stage <= 2 ? 2 : stage <= 4 ? 3 : 4;
+  const depth=stage<=2?2:stage<=4?3:4; // 최대 depth 4로 고정
   document.getElementById('ai-depth').textContent='depth '+depth;
-  // legalMv는 이미 체크 후 이동만 반환 → 킹 직접 포획 불가
-  // (킹을 잡는 수는 상대 킹이 체크 상태이므로 legalMv에서 필터됨)
   const moves=legalMv(b,'enm');if(!moves.length)return null;
-  // 체크메이트 1수 우선
   for(const mv of moves){const nb=applyMv(b,mv);if(isCheck(nb,'my')&&!legalMv(nb,'my').length)return mv;}
   let best=-Infinity,bm=moves[0];
   for(const mv of moves){const sc=minimax(applyMv(b,mv),depth-1,-Infinity,Infinity,false);if(sc>best){best=sc;bm=mv;}}
@@ -735,11 +762,29 @@ function checkAfterEnemyMove(){
   // 내 체크메이트: 내가 체크 + 움직일 수 없음
   if(isCheck(board,'my')&&myLegal.length===0){
     if(kingPerks.shield>0){
-      // 방어막 1회 소모 → 계속 진행 (상대 턴 재실행 없이 내 턴으로)
       kingPerks.shield--;
-      addLog(`왕의 방어막 발동! (남은 방어막: ${kingPerks.shield})`, 'warn');
+      // 방어막 발동: 체크를 주고 있는 적 기물 중 하나를 제거
+      const attackers=[];
+      for(let i=0;i<64;i++){
+        if(board[i]?.side==='enm'&&board[i].type!=='king'){
+          const nb=board.map(x=>x?{...x}:null);nb[i]=null;
+          if(!isCheck(nb,'my'))attackers.push(i); // 이 기물 제거하면 체크 해소
+        }
+      }
+      // 체크 해소 기물이 없으면 아무 적 기물(킹 제외) 제거
+      const targets=attackers.length>0?attackers:board.map((p,i)=>p?.side==='enm'&&p.type!=='king'?i:null).filter(i=>i!==null);
+      if(targets.length>0){
+        const removeIdx=targets[Math.floor(Math.random()*targets.length)];
+        const removed=board[removeIdx];
+        board[removeIdx]=null;
+        addLog(`왕의 방어막 발동! ${SYM.enm[removed.type]} 제거. (남은 방어막: ${kingPerks.shield})`, 'warn');
+      } else {
+        addLog(`왕의 방어막 발동! (남은 방어막: ${kingPerks.shield})`, 'warn');
+      }
       updateKingPerksUI();
-      return false; // 게임 종료 안 함, 내 턴으로
+      inCheck=isCheck(board,'my');
+      renderBoard();updateInfo();
+      return false; // 게임 종료 안 함 → endTurn에서 내 턴으로
     }
     endGame(false,'체크메이트 — 킹이 잡혔습니다');return true;
   }
@@ -796,9 +841,7 @@ function buildRewardPool(){
   pool.push({id:'add_pawn',    rarity:'common',    label:'폰 카드 획득',     desc:'덱에 폰 2장 추가',           w:8});
   pool.push({id:'add_knight',  rarity:'common',    label:'나이트 카드 획득',  desc:'덱에 나이트 1장 추가',       w:7});
   pool.push({id:'add_bishop',  rarity:'common',    label:'비숍 카드 획득',    desc:'덱에 비숍 1장 추가',         w:7});
-  pool.push({id:'compress',    rarity:'common',    label:'덱 압축',           desc:'묘지 카드 1장 영구 제거',    w:7});
   pool.push({id:'draw_up',     rarity:'common',    label:'드로우 강화',       desc:'다음 스테이지 시작 카드 5장', w:6});
-  pool.push({id:'reshuffle',   rarity:'common',    label:'묘지 리셔플',       desc:'묘지 전체 → 덱으로 복귀',   w:6});
 
   // ── uncommon ──
   pool.push({id:'add_rook',    rarity:'uncommon',  label:'룩 카드 획득',      desc:'덱에 룩 1장 추가',           w:5});
@@ -859,8 +902,6 @@ function pickReward(id){
   else if(id==='add_rook'){persistBonus.push(makeCard('rook'));addLog('룩 카드 획득!','warn');}
   else if(id==='add_queen'){persistBonus.push(makeCard('queen'));addLog('퀸 카드 획득!','warn');}
   else if(id==='upgrade'){showUpgradeModal();return;}
-  else if(id==='compress'){showCompressModal();return;}
-  else if(id==='reshuffle'){const g=[...graveyard];graveyard=[];shuf(g);deck.push(...g);addLog(`묘지 ${g.length}장 → 덱.`,'warn');}
   else if(id==='draw_up'){nextStartDraw=5;addLog('다음 스테이지 시작 카드 5장!','warn');}
   else if(id==='king_range'){
     kingPerks.extraRange=(kingPerks.extraRange||0)+1;
