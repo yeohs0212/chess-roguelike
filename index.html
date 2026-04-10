@@ -417,20 +417,73 @@ function makeDeck(){
 }
 
 function initBoard(){
+  // 🌟 핵심: 유저의 이전 행동(보상 선택 등)과 무관하게,
+  // 오늘 날짜와 스테이지 번호만으로 보드 난수를 완벽히 고정합니다!
+  const backupSeed = currentSeed;
+  currentSeed = dailySeed + (stage * 99999); // 스테이지별 절대 고정 시드
+
   board=Array(64).fill(null);
+  board.epTarget = -1; // 앙파상 타겟 칸 초기화
+  
+  // 내 기본 기물 배치
   board[60]={type:'king',side:'my'};board[56]={type:'rook',side:'my'};board[63]={type:'rook',side:'my'};
   board[51]={type:'pawn',side:'my'};board[52]={type:'pawn',side:'my'};board[53]={type:'pawn',side:'my'};
-  board[4]={type:'king',side:'enm'};
-  board[8]={type:'pawn',side:'enm'};board[9]={type:'pawn',side:'enm'};board[10]={type:'pawn',side:'enm'};board[11]={type:'pawn',side:'enm'};
-  if(stage>=1){board[0]={type:'rook',side:'enm'};board[7]={type:'rook',side:'enm'};}
-  if(stage>=2){board[1]={type:'knight',side:'enm'};}
-  if(stage>=3){board[6]={type:'knight',side:'enm'};}
-  if(stage>=4){board[3]={type:'bishop',side:'enm'};}
-  if(stage>=5){board[5]={type:'bishop',side:'enm'};board[12]={type:'pawn',side:'enm'};board[13]={type:'pawn',side:'enm'};}
-  if(stage>=6){board[3]={type:'queen',side:'enm'};}
-  if(stage>=7){board[14]={type:'pawn',side:'enm'};board[15]={type:'pawn',side:'enm'};}
-  if(stage>=8){board[2]={type:'knight',side:'enm'};}
-  if(stage>=9){board[5]={type:'queen',side:'enm'};}
+
+  // 1. 적 킹 랜덤 배치 (맨 윗줄 0~7칸 중 하나에 무작위로)
+  const enemyKingCol = Math.floor(seededRandom() * 8);
+  board[enemyKingCol] = {type:'king', side:'enm'};
+
+  // 2. 스테이지별 적 기물 포인트(예산) 설정
+  // 1스테이지: 14점 / 2스테이지: 21점 / 3스테이지: 30점
+  const budgets = [0, 14, 21, 30]; 
+  let budget = budgets[stage] || 30; // 3스테이지 이후 예외처리
+  let enemyPieces = [];
+
+  // 기본 폰(방패막이) 4개는 확정 지급
+  for(let i=0; i<4; i++) { enemyPieces.push('pawn'); budget -= 1; }
+
+  // 기물 상점 (스테이지별 등장 제한)
+  const types = [
+    {type: 'queen', cost: 9, minStage: 3},
+    {type: 'rook', cost: 5, minStage: 1},
+    {type: 'bishop', cost: 3, minStage: 2},
+    {type: 'knight', cost: 3, minStage: 1},
+    {type: 'pawn', cost: 1, minStage: 1}
+  ];
+
+  // 예산이 바닥날 때까지 무작위로 기물 장바구니에 담기
+  while(budget > 0) {
+    const candidates = types.filter(t => t.cost <= budget && t.minStage <= stage);
+    if(candidates.length === 0) break;
+    const pick = candidates[Math.floor(seededRandom() * candidates.length)];
+    enemyPieces.push(pick.type);
+    budget -= pick.cost;
+  }
+
+  // 3. 기물을 보드에 무작위 배치 (적 진영인 0~3번째 줄 사용)
+  let availableCells = [];
+  for(let i=0; i<32; i++){
+    if(i !== enemyKingCol) availableCells.push(i);
+  }
+  shuf(availableCells); 
+
+  // 장바구니에 담긴 기물을 빈칸에 하나씩 놓기
+  enemyPieces.forEach(piece => {
+     let targetCell;
+     if(piece === 'pawn') {
+         // 폰은 맨 윗줄에 두면 꼬이므로 가급적 1~2번째 줄에 배치
+         let pawnIdx = availableCells.findIndex(c => c >= 8 && c <= 23);
+         if(pawnIdx !== -1) targetCell = availableCells.splice(pawnIdx, 1)[0];
+         else targetCell = availableCells.pop(); 
+     } else {
+         targetCell = availableCells.pop();
+     }
+     board[targetCell] = {type: piece, side: 'enm'};
+  });
+
+  // 🌟 보드 세팅이 끝난 후, 난수 시드를 다시 유저 개인의 흐름으로 복구합니다.
+  // (이후 내 덱이 섞이는 건 정상적으로 무작위 적용됨)
+  currentSeed = backupSeed;
 }
 
 /* ── 이동 계산 (ability 반영) ── */
@@ -448,20 +501,23 @@ function getMoves(i,b){
   const abi=p.ability?ABILITIES[p.ability]:null;
 
   if(p.type==='pawn'){
-    const d=p.side==='my'?-1:1;  // my: 위(-1), enm: 아래(+1)
+    const d=p.side==='my'?-1:1;
     const startRow=p.side==='my'?6:1;
-    const nr=r+d;  // 전진 방향 한 칸
-
-    // 전진 이동 (대각 불가, 직선만)
+    const nr=r+d;
+    
+    // 전진
     if(inB(nr,c)&&!b[idx(nr,c)]){
       mv.add(idx(nr,c));
       const canTwo=abi?.noStartRestrict||r===startRow;
       if(canTwo&&inB(r+2*d,c)&&!b[idx(r+2*d,c)])mv.add(idx(r+2*d,c));
     }
-    // 대각 포획: 반드시 전진 방향(d) 대각만 허용
+    // 대각 포획 및 앙파상 허용
     [-1,1].forEach(dc=>{
-      const cr=r+d, cc=c+dc;  // capture row = 전진 1칸 row만
-      if(inB(cr,cc)&&b[idx(cr,cc)]?.side===en)mv.add(idx(cr,cc));
+      const cr=r+d, cc=c+dc;
+      if(inB(cr,cc)){
+          if (b[idx(cr,cc)]?.side===en) mv.add(idx(cr,cc)); // 일반 포획
+          else if (b.epTarget !== undefined && b.epTarget === idx(cr,cc)) mv.add(idx(cr,cc)); // 앙파상 포획
+      }
     });
   }else if(p.type==='knight'){
     [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]].forEach(([dr,dc])=>push(r+dr,c+dc));
@@ -472,12 +528,10 @@ function getMoves(i,b){
   }else if(p.type==='queen'){
     [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]].forEach(([dr,dc])=>slide(dr,dc));
   }else if(p.type==='king'){
-    // 기본 1칸 + extraRange 만큼 확장
     const range=(p.side==='my'?(kingPerks.extraRange||0):0)+1;
     if(range===1){
       [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]].forEach(([dr,dc])=>push(r+dr,c+dc));
     }else{
-      // range칸 슬라이드 (단, 중간에 막히면 멈춤)
       for(const[dr,dc]of[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]){
         let rr=r+dr,cc=c+dc;
         for(let step=0;step<range;step++){
@@ -491,7 +545,6 @@ function getMoves(i,b){
     }
   }
 
-  // ability 추가 이동
   if(abi?.extraMoves){
     abi.extraMoves(r,c,p.side,b).forEach(m=>{
       const t=b[m];if(!t||t.side!==p.side)mv.add(m);
@@ -505,9 +558,31 @@ function allMv(b,side){const m=[];for(let i=0;i<64;i++)if(b[i]?.side===side)getM
 
 function applyMv(b,mv){
   const nb=b.map(x=>x?{...x}:null);
-  nb[mv.to]=nb[mv.from];nb[mv.from]=null;
-  // 폰 승격
-  if(nb[mv.to]?.type==='pawn'){const[r]=rc(mv.to);if(nb[mv.to].side==='enm'&&r===7)nb[mv.to]={type:'queen',side:'enm'};if(nb[mv.to].side==='my'&&r===0)nb[mv.to]={type:'queen',side:'my',ability:nb[mv.to].ability||null};}
+  nb.epTarget = -1; // 기본적으로 모든 이동 후 앙파상 타겟은 초기화됨
+  
+  const p = b[mv.from];
+  nb[mv.to] = nb[mv.from];
+  nb[mv.from] = null;
+  
+  if(p?.type==='pawn'){
+      const rFrom = Math.floor(mv.from / 8);
+      const rTo = Math.floor(mv.to / 8);
+      
+      // 1) 폰이 2칸 처음 전진했을 경우, 앙파상 타겟(지나친 칸) 기록
+      if (Math.abs(rFrom - rTo) === 2) {
+          nb.epTarget = (mv.from + mv.to) / 2;
+      }
+      
+      // 2) 앙파상 포획 실행 (타겟 칸으로 대각선 이동한 경우)
+      if (mv.to === b.epTarget) {
+          const captureIdx = p.side === 'my' ? mv.to + 8 : mv.to - 8;
+          nb[captureIdx] = null; // 뒤에 있는 상대 폰 제거
+      }
+      
+      // 3) 폰 승격 (이동 시)
+      if(p.side==='enm'&&rTo===7)nb[mv.to]={type:'queen',side:'enm'};
+      if(p.side==='my'&&rTo===0)nb[mv.to]={type:'queen',side:'my',ability:nb[mv.to].ability||null};
+  }
   return nb;
 }
 
@@ -665,9 +740,20 @@ function onCardClick(i){
 }
 
 function doExecMove(from,to){
-  const cap=board[to];const piece=board[from];lf=from;lt=to;
+  let cap=board[to];
+  const piece=board[from];
+  let isEP = false;
+  
+  // 앙파상인 경우, 잡힌 기물은 이동한 곳 뒤에 있음
+  if (piece.type === 'pawn' && to === board.epTarget) {
+      const capIdx = piece.side === 'my' ? to + 8 : to - 8;
+      cap = board[capIdx];
+      isEP = true;
+  }
+  
+  lf=from;lt=to;
   if(cap){
-    addLog(`${SYM.my[piece.type]} ×${SYM.enm[cap.type]} @${toNot(to)}`,'my');
+    addLog(`${SYM.my[piece.type]} ×${SYM.enm[cap.type]} @${toNot(to)}${isEP?' (앙파상)':''}`,'my');
     drawCard('포획');
   }else{
     addLog(`${SYM.my[piece.type]} ${toNot(from)}→${toNot(to)}`,'my');
@@ -682,9 +768,23 @@ function doExecMove(from,to){
 
 function doExecPlace(cardIdx,cellIdx){
   const card=hand[cardIdx];
-  // 기물에 ability 전달
-  board[cellIdx]={type:card.type,side:'my',ability:card.ability||null};
-  addLog(`${cardSym(card)} ${cardDisplayName(card)} → ${toNot(cellIdx)}`,'my');
+  const [r]=rc(cellIdx);
+  let typeToPlace = card.type;
+  
+  // 🐛 버그 수정: 폰을 상대 끝 라인에 소환하면 즉시 퀸으로 승격
+  if (typeToPlace === 'pawn' && r === 0) {
+      typeToPlace = 'queen';
+  }
+  
+  board[cellIdx]={type:typeToPlace, side:'my', ability:card.ability||null};
+  board.epTarget = -1; // 카드를 배치하면 턴이 넘어가므로 앙파상 기회 소멸
+  
+  if(typeToPlace === 'queen' && card.type === 'pawn') {
+      addLog(`${cardSym(card)} ${cardDisplayName(card)} → ${toNot(cellIdx)} (자동 퀸 승격!)`,'warn');
+  } else {
+      addLog(`${cardSym(card)} ${cardDisplayName(card)} → ${toNot(cellIdx)}`,'my');
+  }
+  
   graveyard.push(hand.splice(cardIdx,1)[0]);
   selCard=null;
   renderHand();renderBoard();updateInfo();updateCounts();
@@ -845,7 +945,7 @@ function buildRewardPool(){
 
   // ── uncommon ──
   pool.push({id:'add_rook',    rarity:'uncommon',  label:'룩 카드 획득',      desc:'덱에 룩 1장 추가',           w:5});
-  pool.push({id:'king_summon', rarity:'uncommon',  label:'킹의 영역 확장',    desc:'킹 주변 카드 소환 범위 +1칸', w:4});
+  pool.push({id:'king_summon', rarity:'uncommon',  label:'킹의 영역 확장',    desc:'킹 주변 카드 소환 범위 +1칸', w:3});
 
   // ── rare ──
   pool.push({id:'add_queen',   rarity:'rare',      label:'퀸 카드 획득',      desc:'덱에 퀸 1장 추가',           w:3});
@@ -1029,23 +1129,29 @@ async function endTurn(){
   const mCnt=twice?2:1;
 
   for(let m=0;m<mCnt;m++){
-    // ★ 킹 직접 포획 방지: legalMv는 이미 자기 킹이 체크되는 수를 제외함
-    // 추가로: 상대 킹을 직접 to 타깃으로 하는 수는 없음 (상대 킹이 체크 상태라면
-    // legalMv가 이미 그 수를 포함하지만, 킹은 체크 해소 후에만 이동 가능하므로
-    // '킹 직접 포획'은 실제 체스 규칙상 발생할 수 없음. 하지만 방어적으로 필터 추가)
     const mv=bestMove(board);
     if(!mv)break;
 
-    // 안전 장치: 내 킹을 직접 포획하는 수는 실행 금지
     const target=board[mv.to];
     if(target?.side==='my'&&target?.type==='king'){
       addLog('적 AI: 킹 직접 포획 시도 차단.','sys');break;
     }
 
-    const fp=board[mv.from],cap=board[mv.to];
-    lf=mv.from;lt=mv.to;board=applyMv(board,mv);
+    const fp=board[mv.from];
+    let cap = board[mv.to];
+    let isEP = false;
+    
+    // 적 AI의 앙파상 판정
+    if (fp.type === 'pawn' && mv.to === board.epTarget) {
+        cap = board[mv.to - 8];
+        isEP = true;
+    }
+
+    lf=mv.from;lt=mv.to;
+    board=applyMv(board,mv);
     const sym=SYM.enm[fp.type]||'?';
-    if(cap)addLog(`${sym} ×${SYM.my[cap.type]} @${toNot(mv.to)}`+(twice&&m===0?' (연속)':''),'enm');
+    
+    if(cap)addLog(`${sym} ×${SYM.my[cap.type]} @${toNot(mv.to)}${isEP?' (앙파상)':''}`+(twice&&m===0?' (연속)':''),'enm');
     else addLog(`${sym} ${toNot(mv.from)}→${toNot(mv.to)}`+(twice&&m===0?' (연속 이동)':''),'enm');
 
     if(m===0&&mCnt>1){
